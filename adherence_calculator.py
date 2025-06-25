@@ -198,85 +198,126 @@ def calculate_time_difference(actual_timestamp, scheduled_timestamp):
     time_difference = (actual_dt - scheduled_dt).total_seconds()
     return int(time_difference)
 
+def adding_schedule_timetable(adherence_df, schedule_df):
+    """
+    Merges adherence data with schedule data and calculates adherence metrics.
+    """
+    # Ensure consistent column names for merging
+    if 'agency_id' in schedule_df.columns:
+        schedule_df = schedule_df.rename(columns={'agency_id': 'agency'})
+
+    # Convert timestamp columns to datetime objects for merging
+    for col in ['scheduled_start_timestamp', 'scheduled_end_timestamp']:
+        adherence_df[col] = pd.to_datetime(adherence_df[col], errors='coerce', utc=True)
+        schedule_df[col] = pd.to_datetime(schedule_df[col], errors='coerce', utc=True)
+    
+    # Perform the merge
+    merged_df = pd.merge(
+        schedule_df,
+        adherence_df,
+        on=['vehicle_id', 'agency', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp'],
+        how='left'
+    )
+
+    # Convert more columns to datetime after merge
+    merged_df['actual_start_timestamp'] = pd.to_datetime(merged_df['actual_start_timestamp'], errors='coerce', utc=True)
+    merged_df['actual_end_timestamp'] = pd.to_datetime(merged_df['actual_end_timestamp'], errors='coerce', utc=True)
+
+    # Calculate adherence for rows where actual timestamps are available
+    valid_actuals = merged_df[merged_df['actual_start_timestamp'].notna()].copy()
+    
+    if not valid_actuals.empty:
+        valid_actuals['start_adherence'] = (valid_actuals['actual_start_timestamp'] - valid_actuals['scheduled_start_timestamp']).dt.total_seconds()
+        valid_actuals['end_adherence'] = (valid_actuals['actual_end_timestamp'] - valid_actuals['scheduled_end_timestamp']).dt.total_seconds()
+        
+        # Update the original merged_df with calculated adherence
+        merged_df.update(valid_actuals)
+
+    return merged_df
+
 def convert_to_json(row):
-
-    is_electric = row['vehicle_id'].startswith(('DL51GD', 'DL51EV'))
-
-    # Set the fuel_type accordingly
-    fuel_type = "electric" if is_electric else "cng"
-
-    vehicle_info = {
-        "id": row['vehicle_id'],
-        "is_ac": row['ac'],
-        "fuel_type": fuel_type,
-        "depot": {
-                "name": row['depot'],
-                "agency": row['agency']
-            }
-        }
-
-    json_data = {
-        "vehicle": vehicle_info,
-        "trip_completion": row['completion'],
-        "pb_trip_id": (row['pb_trip_id']),
-        "route_id": (row['route_id']),
-        "route_short_name": (row['route_short_name']),
-        "route_long_name": (row['route_long_name']),
-        "actual": {
-            "start_timestamp": (row['actual_start_timestamp']),
-            "end_timestamp": (row['actual_end_timestamp'])
+    """
+    Convert a DataFrame row to a JSON object with a specific structure.
+    """
+    json_output = {
+        'vehicle': {
+            'id': row.get('vehicle_id'),
+            'ac': row.get('ac'),
+            'fuel': row.get('fuel'),
+            'depot': row.get('depot'),
+            'agency': row.get('agency')
         },
-        "scheduled": {
-            "start_timestamp": (row['scheduled_start_timestamp']),
-            "end_timestamp": (row['scheduled_end_timestamp'])
+        'trip_progress': {
+            'completion_percentage': row.get('completion'),
+            'id': row.get('pb_trip_id')
         },
-        "start_adherence_in_seconds": calculate_time_difference(
-                                        row['actual_start_timestamp'],
-                                        row['scheduled_start_timestamp']
-                                    ),
-        "end_adherence_in_seconds": calculate_time_difference(
-                                        row['actual_end_timestamp'],
-                                        row['scheduled_end_timestamp']
-                                    ),
-        "stops":
-                [
-                    {
-                        "id": row['first_stop_id'],
-                        "name": row['first_stop_name'],
-                        "actual_arrival": row['actual_start_timestamp'],
-                        "scheduled_arrival": row['scheduled_start_timestamp'],
-                        "actual_departure": row['actual_start_timestamp'],
-                        "scheduled_departure": row['scheduled_start_timestamp'],
-                        "arrival_adherence_in_seconds": calculate_time_difference(
-                                                            row['actual_start_timestamp'],
-                                                            row['scheduled_start_timestamp']
-                                                        ),
-                        "departure_adherence_in_seconds": calculate_time_difference(
-                                                            row['actual_start_timestamp'],
-                                                            row['scheduled_start_timestamp']
-                                                        )
-                    },
-
-                    {
-                        "id": row['last_stop_id'],
-                        "name": row['last_stop_name'],
-                        "actual_arrival": row['actual_end_timestamp'],
-                        "scheduled_arrival": row['scheduled_end_timestamp'],
-                        "actual_departure": row['actual_end_timestamp'],
-                        "scheduled_departure": row['scheduled_end_timestamp'],
-                        "arrival_adherence_in_seconds": calculate_time_difference(
-                                                            row['actual_end_timestamp'],
-                                                            row['scheduled_end_timestamp']
-                                                        ),
-                        "departure_adherence_in_seconds": calculate_time_difference(
-                                                            row['actual_end_timestamp'],
-                                                            row['scheduled_end_timestamp']
-                                                        )
-                    }
-                ]
+        'route': {
+            'id': row.get('route_id'),
+            'short_name': row.get('route_short_name'),
+            'long_name': row.get('route_long_name')
+        },
+        'timestamps': {
+            'actual_start': row.get('actual_start_timestamp'),
+            'actual_end': row.get('actual_end_timestamp'),
+            'scheduled_start': row.get('scheduled_start_timestamp'),
+            'scheduled_end': row.get('scheduled_end_timestamp')
+        },
+        'start_adherence_in_seconds': row.get('start_adherence'),
+        'end_adherence_in_seconds': row.get('end_adherence'),
+        'stops': []
     }
 
-    return json_data
+    stops_data = []
+    seen_stop_ids = set()
+
+    # Use .get() to avoid KeyErrors if a column is missing
+    # Stop from main columns
+    stop_id = row.get('stop_id')
+    if pd.notna(stop_id) and stop_id not in seen_stop_ids:
+        stops_data.append({
+            "id": stop_id,
+            "name": row.get('stop_name'),
+            "actual_arrival": row.get('actual_arrival'),
+            "scheduled_arrival": row.get('scheduled_arrival'),
+            "actual_departure": row.get('actual_departure'),
+            "scheduled_departure": row.get('scheduled_departure'),
+            "arrival_adherence_in_seconds": row.get('arrival_adherence'),
+            "departure_adherence_in_seconds": row.get('departure_adherence')
+        })
+        seen_stop_ids.add(stop_id)
+
+    # Stop from 'first_stop' columns
+    first_stop_id = row.get('first_stop_id')
+    if pd.notna(first_stop_id) and first_stop_id not in seen_stop_ids:
+        stops_data.append({
+            "id": first_stop_id,
+            "name": row.get('first_stop_name'),
+            "actual_arrival": None,
+            "scheduled_arrival": None,
+            "actual_departure": None,
+            "scheduled_departure": None,
+            "arrival_adherence_in_seconds": None,
+            "departure_adherence_in_seconds": None
+        })
+        seen_stop_ids.add(first_stop_id)
+
+    # Stop from 'last_stop' columns
+    last_stop_id = row.get('last_stop_id')
+    if pd.notna(last_stop_id) and last_stop_id not in seen_stop_ids:
+        stops_data.append({
+            "id": last_stop_id,
+            "name": row.get('last_stop_name'),
+            "actual_arrival": None,
+            "scheduled_arrival": None,
+            "actual_departure": None,
+            "scheduled_departure": None,
+            "arrival_adherence_in_seconds": None,
+            "departure_adherence_in_seconds": None
+        })
+        seen_stop_ids.add(last_stop_id)
+
+    json_output['stops'] = stops_data
+    return json_output
 
 def split_dataframe(trips, max_time_difference):
     splits = []
@@ -524,59 +565,58 @@ def process_trip_completions(trip_comp, route_id):
         #         new_timestamp_str = new_timestamp.strftime("%Y-%m-%dT%H:%M:%S") + timezone_offset_with_colon
         #         actaul_start_timestamp = new_timestamp_str
 
-        # print(f'Actual Start Time: {actaul_start_timestamp}')
-        if trip_comp['trip_completion'].shape[0]>=2:
-            closest_Stop_id_last = trip_comp['closest_stop_id'].iloc[-1]
-            flag,last_stop_id,last_stop_name = isLastStop(route_id,closest_Stop_id_last)
-            if flag:
+    if trip_comp['trip_completion'].shape[0]>=2:
+        closest_Stop_id_last = trip_comp['closest_stop_id'].iloc[-1]
+        flag,last_stop_id,last_stop_name = isLastStop(route_id,closest_Stop_id_last)
+        if flag:
+            last_flag = True
+            actaul_end_timestamp = trip_comp['closest_stop_time'].iloc[-1]
+        else:
+            if trip_comp['trip_completion'].iloc[-1] >= 90:
                 last_flag = True
-                actaul_end_timestamp = trip_comp['closest_stop_time'].iloc[-1]
+                closest_Stop_id_One = trip_comp['closest_stop_id'].iloc[-1]
+                closest_Stop_id_Two = trip_comp['closest_stop_id'].iloc[-2]
+                closest_timestamp_One = trip_comp['closest_stop_time'].iloc[-1]
+                closest_timestamp_Two = trip_comp['closest_stop_time'].iloc[-2]
+                # trip_comp.to_csv('trip_comp.csv', index=False)
+                # print(f'vehicle_id: {vehicle_id}')
+                speed = speedCal(route_id,closest_Stop_id_One,closest_Stop_id_Two,closest_timestamp_One,closest_timestamp_Two)
+                if speed < 20 :
+                    speed = 20
+                distance,last_stop_id,last_stop_name = lastdistanceCal(route_id,closest_Stop_id_One)
+                time_hours = distance / speed
+
+                timestamp_One = datetime.fromisoformat(closest_timestamp_One)
+                new_timestamp = timestamp_One + timedelta(hours=time_hours)
+                timezone_offset = new_timestamp.strftime("%z")
+                # Insert the colon in the timezone offset
+                timezone_offset_with_colon = f"{timezone_offset[:-2]}:{timezone_offset[-2:]}"
+                new_timestamp_str = new_timestamp.strftime("%Y-%m-%dT%H:%M:%S") + timezone_offset_with_colon
+
+                # print(closest_timestamp_One,new_timestamp_str)
+                actaul_end_timestamp = new_timestamp_str
             else:
-                if trip_comp['trip_completion'].iloc[-1] >= 90:
-                    last_flag = True
-                    closest_Stop_id_One = trip_comp['closest_stop_id'].iloc[-1]
-                    closest_Stop_id_Two = trip_comp['closest_stop_id'].iloc[-2]
-                    closest_timestamp_One = trip_comp['closest_stop_time'].iloc[-1]
-                    closest_timestamp_Two = trip_comp['closest_stop_time'].iloc[-2]
-                    # trip_comp.to_csv('trip_comp.csv', index=False)
-                    # print(f'vehicle_id: {vehicle_id}')
-                    speed = speedCal(route_id,closest_Stop_id_One,closest_Stop_id_Two,closest_timestamp_One,closest_timestamp_Two)
-                    if speed < 20 :
-                        speed = 20
-                    distance,last_stop_id,last_stop_name = lastdistanceCal(route_id,closest_Stop_id_One)
-                    time_hours = distance / speed
+                last_stop_id = trip_comp['closest_stop_id'].iloc[-1]
+                last_stop_name = trip_comp['closest_stop_name'].iloc[-1]
+                actaul_end_timestamp = trip_comp['closest_stop_time'].iloc[-1]
 
-                    timestamp_One = datetime.fromisoformat(closest_timestamp_One)
-                    new_timestamp = timestamp_One + timedelta(hours=time_hours)
-                    timezone_offset = new_timestamp.strftime("%z")
-                    # Insert the colon in the timezone offset
-                    timezone_offset_with_colon = f"{timezone_offset[:-2]}:{timezone_offset[-2:]}"
-                    new_timestamp_str = new_timestamp.strftime("%Y-%m-%dT%H:%M:%S") + timezone_offset_with_colon
-
-                    # print(closest_timestamp_One,new_timestamp_str)
-                    actaul_end_timestamp = new_timestamp_str
-                else:
-                    last_stop_id = trip_comp['closest_stop_id'].iloc[-1]
-                    last_stop_name = trip_comp['closest_stop_name'].iloc[-1]
-                    actaul_end_timestamp = trip_comp['closest_stop_time'].iloc[-1]
-
-        # elif trip_comp['trip_completion'].shape[0]==1:
-        #     closest_Stop_id_last = trip_comp['closest_stop_id'].iloc[-1]
-        #     flag,last_stop_id,last_stop_name = isLastStop(route_id,closest_Stop_id_last)
-        #     if flag:
-        #         actaul_end_timestamp = trip_comp['closest_stop_time'].iloc[-1]
-        #     else:
-        #         closest_Stop_id_One = trip_comp['closest_stop_id'].iloc[-1]
-        #         closest_timestamp_One = trip_comp['closest_stop_time'].iloc[-1]
-        #         speed = 14
-        #         distance,last_stop_id,last_stop_name = lastdistanceCal(route_id,closest_Stop_id_One)
-        #         time_hours = distance / speed
-        #         timestamp_One = datetime.fromisoformat(closest_timestamp_One)
-        #         new_timestamp = timestamp_One + timedelta(hours=time_hours)
-        #         timezone_offset = new_timestamp.strftime("%z")
-        #         timezone_offset_with_colon = f"{timezone_offset[:-2]}:{timezone_offset[-2:]}"
-        #         new_timestamp_str = new_timestamp.strftime("%Y-%m-%dT%H:%M:%S") + timezone_offset_with_colon
-        #         actaul_end_timestamp = new_timestamp_str
+    # elif trip_comp['trip_completion'].shape[0]==1:
+    #     closest_Stop_id_last = trip_comp['closest_stop_id'].iloc[-1]
+    #     flag,last_stop_id,last_stop_name = isLastStop(route_id,closest_Stop_id_last)
+    #     if flag:
+    #         actaul_end_timestamp = trip_comp['closest_stop_time'].iloc[-1]
+    #     else:
+    #         closest_Stop_id_One = trip_comp['closest_stop_id'].iloc[-1]
+    #         closest_timestamp_One = trip_comp['closest_stop_time'].iloc[-1]
+    #         speed = 14
+    #         distance,last_stop_id,last_stop_name = lastdistanceCal(route_id,closest_Stop_id_One)
+    #         time_hours = distance / speed
+    #         timestamp_One = datetime.fromisoformat(closest_timestamp_One)
+    #         new_timestamp = timestamp_One + timedelta(hours=time_hours)
+    #         timezone_offset = new_timestamp.strftime("%z")
+    #         timezone_offset_with_colon = f"{timezone_offset[:-2]}:{timezone_offset[-2:]}"
+    #         new_timestamp_str = new_timestamp.strftime("%Y-%m-%dT%H:%M:%S") + timezone_offset_with_colon
+    #         actaul_end_timestamp = new_timestamp_str
 
     if first_flag and last_flag:
         completion = True
@@ -676,53 +716,32 @@ def adding_schedule_timetable(SCHEDULE_ADHERENCE_final, scheduled_timestamp):
     SCHEDULE_ADHERENCE_final['actual_start_timestamp'] = pd.to_datetime(SCHEDULE_ADHERENCE_final['actual_start_timestamp'])
     SCHEDULE_ADHERENCE_final['scheduled_start_timestamp'] = pd.to_datetime(SCHEDULE_ADHERENCE_final['scheduled_start_timestamp'])
 
-    # Define a function to calculate the time difference
-    def calculate_time_difference(group):
-        group['time_difference'] = abs(group['actual_start_timestamp'] - group['scheduled_start_timestamp'])
-        min_index = group['time_difference'].idxmin()
-        return group.loc[min_index]
+    # Sort values for correct time difference calculation
+    adherence = SCHEDULE_ADHERENCE_final.copy()
+    adherence.sort_values(['vehicle_id', 'agency', 'route_id', 'scheduled_start_timestamp', 'actual_start_timestamp'], inplace=True)
 
-    # Grouping the data frame by specified columns
-    grouped_df = SCHEDULE_ADHERENCE_final.groupby(['vehicle_id', 'agency', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp'])
+    # Vectorized calculation of adherence and time differences
+    adherence['start_adherence'] = (adherence['actual_start_timestamp'] - adherence['scheduled_start_timestamp']).dt.total_seconds()
+    adherence['end_adherence'] = (adherence['actual_end_timestamp'] - adherence['scheduled_end_timestamp']).dt.total_seconds()
+    time_difference = adherence.groupby(['vehicle_id', 'agency', 'route_id', 'scheduled_start_timestamp'])['actual_start_timestamp'].diff().dt.total_seconds()
 
-    # Applying the function to each group to find the row with the minimum time difference
-    SCHEDULE_ADHERENCE_final = grouped_df.apply(calculate_time_difference)
+    # Filter out records that are too close together (potential duplicates)
+    SCHEDULE_ADHERENCE_final = adherence[~((time_difference >= 0) & (time_difference <= 1800))].copy()
 
-    # Reset index if needed
-    SCHEDULE_ADHERENCE_final.reset_index(drop=True, inplace=True)
-
-    SCHEDULE_ADHERENCE_final = SCHEDULE_ADHERENCE_final.drop(columns=['time_difference'])
-
-    # Convert datetime columns to string with timezone
+    # Convert datetime columns to string with timezone for merging
     SCHEDULE_ADHERENCE_final['actual_start_timestamp'] = SCHEDULE_ADHERENCE_final['actual_start_timestamp'].dt.strftime("%Y-%m-%dT%H:%M:%S") + "+05:30"
     SCHEDULE_ADHERENCE_final['scheduled_start_timestamp'] = SCHEDULE_ADHERENCE_final['scheduled_start_timestamp'].dt.strftime("%Y-%m-%dT%H:%M:%S") + "+05:30"
+    SCHEDULE_ADHERENCE_final['scheduled_end_timestamp'] = SCHEDULE_ADHERENCE_final['scheduled_end_timestamp'].dt.strftime("%Y-%m-%dT%H:%M:%S") + "+05:30"
 
-    # Lowercase 'agency' column in scheduled_timestamp
+    # Lowercase 'agency' column and convert timestamps in scheduled_timestamp for merging
     scheduled_timestamp['agency'] = scheduled_timestamp['agency_id'].str.lower()
+    scheduled_timestamp['scheduled_start_timestamp'] = scheduled_timestamp['scheduled_start_timestamp'].dt.strftime("%Y-%m-%dT%H:%M:%S") + "+05:30"
+    scheduled_timestamp['scheduled_end_timestamp'] = scheduled_timestamp['scheduled_end_timestamp'].dt.strftime("%Y-%m-%dT%H:%M:%S") + "+05:30"
 
-    # Merge dataframes
-    merged_df = pd.merge(SCHEDULE_ADHERENCE_final, scheduled_timestamp,
-                         how='inner',
-                         left_on=['vehicle_id', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp', 'agency'],
-                         right_on=['vehicle_id', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp', 'agency'])
-
-    # Get unmatched rows from scheduled_timestamp
-    unmatched_rows = scheduled_timestamp[~scheduled_timestamp.set_index(['vehicle_id', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp', 'agency']).index.isin(merged_df.set_index(['vehicle_id', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp', 'agency']).index)]
-
-    # Specify the columns to keep
-    columns_to_keep = ['vehicle_id', 'route_long_name', 'scheduled_end_timestamp', 'scheduled_start_timestamp', 'agency', 'route_id']
-
-    # Drop unwanted columns
-    unmatched_rows = unmatched_rows[columns_to_keep]
-    unmatched_rows.rename(columns={'route_long_name': 'route_short_name'}, inplace=True)
-
-    # Add new columns to unmatched_rows with NaN values
-    new_columns = [col for col in SCHEDULE_ADHERENCE_final.columns if col not in unmatched_rows.columns]
-    for col in new_columns:
-        unmatched_rows[col] = np.nan
-
-    # Concatenate dataframes
-    final_dataframe = pd.concat([SCHEDULE_ADHERENCE_final, unmatched_rows], ignore_index=True, sort=False)
+    # Merge dataframes using a right join to keep all scheduled timestamps and match with adherence data
+    final_dataframe = pd.merge(SCHEDULE_ADHERENCE_final, scheduled_timestamp,
+                               how='right',
+                               on=['vehicle_id', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp', 'agency'])
 
     # Find and save duplicate rows
     subset_cols = ['vehicle_id', 'agency', 'route_id', 'scheduled_start_timestamp', 'scheduled_end_timestamp']

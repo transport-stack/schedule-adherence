@@ -90,7 +90,7 @@ def nearest_seq_tree(route_id, v_lat, v_lon):
     total_stops = len(tree.data)
     result = float(((idx + 1) / total_stops) * 100)
     result = round(result, 2)
-    final_result = 'towards ' + str(stop_ids[-1]['stop_name']) + ',' + str(result) + ',' + str(stop_ids[idx]['stop_name']) + ',' + str(int(stop_ids[idx]['stop_id']))
+    final_result = 'towards ' + str(stop_ids[-1]['stop_name']) + ',' + str(result) + ',' + str(stop_ids[idx]['stop_name']) + ',' + str(stop_ids[idx]['stop_id'])
     return final_result
 
 def get_vehicle_details(vehicle_list, target_vehicle_id):
