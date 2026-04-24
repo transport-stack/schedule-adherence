@@ -29,7 +29,7 @@ The Schedule Adherence Module processes real-time GTFS vehicle position data and
 1. **Clone the repository:**
 
     ```bash
-    git clone <repository-url>
+    git clone https://github.com/transport-stack/schedule-adherence.git
     cd schedule-adherence
     ```
 
